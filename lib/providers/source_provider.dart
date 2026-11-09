@@ -303,14 +303,18 @@ class SourceProvider {
         version: apk.releaseDate!.microsecondsSinceEpoch.toString(),
       );
     }
-    apk = apk.copyWith(
-      apkUrls: filterApks(
-        apk.apkUrls,
-        TypedSettings(additionalSettings).getStringOrNull('apkFilterRegEx') ??
-            settingsProvider.globalApkFilterRegEx,
-        additionalSettings['invertAPKFilter'],
-      ),
-    );
+    if (!(source is GitHub &&
+        !source.hostChanged &&
+        additionalSettings['githubActionsEnabled'] == true)) {
+      apk = apk.copyWith(
+        apkUrls: filterApks(
+          apk.apkUrls,
+          TypedSettings(additionalSettings).getStringOrNull('apkFilterRegEx') ??
+              settingsProvider.globalApkFilterRegEx,
+          additionalSettings['invertAPKFilter'],
+        ),
+      );
+    }
     if (apk.apkUrls.isEmpty && !trackOnly) {
       throw NoAPKError()..url = standardUrl;
     }

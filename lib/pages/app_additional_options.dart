@@ -1,5 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:obtainium/app_sources/github.dart';
+import 'package:obtainium/components/github_actions_picker.dart';
 import 'package:obtainium/components/generated_form_renderer.dart';
 import 'package:obtainium/components/ui_widgets.dart';
 import 'package:obtainium/custom_errors.dart';
@@ -75,6 +77,8 @@ Future<Map<String, dynamic>?> showAdditionalOptionsPage(
         },
         child: _AdditionalOptionsPage(
           title: tr('additionalOptions'),
+          source: source,
+          url: app?.app.url,
           items: items,
           scrollToSection: scrollToSection,
           onValuesChanged: (v) => values = v,
@@ -196,10 +200,14 @@ class _AdditionalOptionsPage extends StatefulWidget {
     required this.title,
     required this.items,
     required this.onValuesChanged,
+    required this.source,
+    required this.url,
     this.scrollToSection,
   });
 
   final String title;
+  final AppSource? source;
+  final String? url;
   final List<List<GeneratedFormItem>> items;
   final ValueChanged<Map<String, dynamic>> onValuesChanged;
   final String? scrollToSection;
@@ -209,9 +217,12 @@ class _AdditionalOptionsPage extends StatefulWidget {
 }
 
 class _AdditionalOptionsPageState extends State<_AdditionalOptionsPage> {
+  Map<String, dynamic> _currentValues = {};
+  int _formGeneration = 0;
   @override
   void initState() {
     super.initState();
+    _currentValues = getDefaultValuesFromFormItems(widget.items);
     final target = widget.scrollToSection;
     if (target != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTo(target));
@@ -250,12 +261,53 @@ class _AdditionalOptionsPageState extends State<_AdditionalOptionsPage> {
                 MediaQuery.of(context).padding.bottom,
               ),
               child: TvInitialFocus(
-                child: GeneratedForm(
-                  tileMode: true,
-                  items: widget.items,
-                  onValueChanges: (v, valid, isBuilding) {
-                    widget.onValuesChanged(v);
-                  },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (widget.source is GitHub &&
+                        !(widget.source! as GitHub).hostChanged &&
+                        widget.url != null &&
+                        _currentValues['githubActionsEnabled'] == true) ...[
+                      const SizedBox(height: 12),
+                      GitHubActionsPickerButton(
+                        source: widget.source! as GitHub,
+                        url: widget.url!,
+                        settings: _currentValues,
+                        onSelected: (selection) {
+                          setState(() {
+                            _currentValues.addAll(selection);
+                            _formGeneration++;
+                          });
+                          widget.onValuesChanged(_currentValues);
+                        },
+                      ),
+                    ],
+                    GeneratedForm(
+                      key: ValueKey(_formGeneration),
+                      tileMode: true,
+                      items: widget.items
+                          .map(
+                            (row) => row.map((item) {
+                              final cloned = item.clone();
+                              if (_currentValues.containsKey(cloned.key)) {
+                                cloned.value = _currentValues[cloned.key];
+                              }
+                              return cloned;
+                            }).toList(),
+                          )
+                          .toList(),
+                      onValueChanges: (v, valid, isBuilding) {
+                        final wasEnabled =
+                            _currentValues['githubActionsEnabled'] == true;
+                        _currentValues = Map<String, dynamic>.from(v);
+                        widget.onValuesChanged(_currentValues);
+                        if (wasEnabled !=
+                            (_currentValues['githubActionsEnabled'] == true)) {
+                          setState(() {});
+                        }
+                      },
+                    ),
+                  ],
                 ),
               ),
             ),

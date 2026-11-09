@@ -12,6 +12,7 @@ import 'package:flutter_archive/flutter_archive.dart';
 import 'package:flutter_fgbg/flutter_fgbg.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:obtainium/components/app_detail_widgets.dart';
+import 'package:obtainium/app_sources/github.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/installers/external_installer.dart';
 import 'package:obtainium/installers/installer.dart';
@@ -231,7 +232,11 @@ extension AppsProviderInstall on AppsProvider {
       unawaited(notificationsProvider?.cancel(notifId));
       int? prevProg;
       var fileNameNoExt = '${app.id}-${downloadUrl.hashCode}';
-      if (source.urlsAlwaysHaveExtension) {
+      final fileNameHasExtension =
+          source.urlsAlwaysHaveExtension ||
+          (source is GitHub &&
+              app.additionalSettings['githubActionsEnabled'] == true);
+      if (fileNameHasExtension) {
         fileNameNoExt =
             '$fileNameNoExt.${app.apkUrls[app.preferredApkIndex].key.split('.').last}';
       }
@@ -285,7 +290,7 @@ extension AppsProviderInstall on AppsProvider {
       additionalSettingsPlusSourceConfig['url'] = downloadUrl;
       var downloadedFile = await downloadFileWithRetry(
         fileNameNoExt,
-        source.urlsAlwaysHaveExtension,
+        fileNameHasExtension,
         headers: headers,
         reportProgress,
         this.apkDir.path,

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:http/http.dart';
 import 'package:obtainium/utils/string_compare.dart';
@@ -11,6 +12,7 @@ import 'package:obtainium/providers/settings_provider.dart';
 import 'package:obtainium/providers/source_provider.dart';
 import 'package:obtainium/utils/update_health.dart';
 import 'package:obtainium/utils/min_update_age.dart';
+import 'package:obtainium/app_sources/github_actions.dart';
 
 DateTime? newestAssetDateFromRelease(dynamic release) {
   if (release is! Map) return null;
@@ -95,6 +97,45 @@ class GitHub extends AppSource {
   @override
   List<List<GeneratedFormItem>>
   get additionalSourceAppSpecificSettingFormItems => [
+    if (!hostChanged) ...[
+      [GeneratedFormHeader(label: tr('githubActionsOptions'))],
+      [
+        GeneratedFormSwitch(
+          'githubActionsEnabled',
+          label: tr('githubActionsEnabled'),
+          value: false,
+        ),
+      ],
+      [
+        GeneratedFormTextField(
+          'githubActionsBranch',
+          label: tr('githubActionsBranch'),
+          required: false,
+        ),
+      ],
+      [
+        GeneratedFormTextField(
+          'githubActionsWorkflow',
+          label: tr('githubActionsWorkflow'),
+          required: false,
+        ),
+      ],
+      [
+        GeneratedFormTextField(
+          'githubActionsArtifactPattern',
+          label: tr('githubActionsArtifactPattern'),
+          required: false,
+          additionalValidators: [(value) => regExValidator(value)],
+        ),
+      ],
+      [
+        GeneratedFormSwitch(
+          'githubActionsIncludePullRequests',
+          label: tr('githubActionsIncludePullRequests'),
+          value: false,
+        ),
+      ],
+    ],
     [GeneratedFormHeader(label: tr('sectionReleaseOptions'))],
     [
       GeneratedFormSwitch(
@@ -293,6 +334,7 @@ class GitHub extends AppSource {
     String url, {
     bool forAPKDownload = false,
   }) async {
+    if (Uri.tryParse(url)?.host.toLowerCase() == 'nightly.link') return null;
     // A request with skipAuth is retried without the configured token (e.g.
     // after the token was rejected for this repository); see #3211.
     final token = additionalSettings['skipAuth'] == true
@@ -349,6 +391,9 @@ class GitHub extends AppSource {
     String reqUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
+    if (Uri.tryParse(reqUrl)?.host.toLowerCase() == 'nightly.link') {
+      return reqUrl;
+    }
     if ((additionalSettings['GHReqPrefix'] as String? ?? '').isNotEmpty) {
       final uri = Uri.parse(reqUrl);
       return 'https://${additionalSettings['GHReqPrefix']}/${uri.toString().substring('https://'.length)}';
@@ -398,6 +443,63 @@ class GitHub extends AppSource {
     Map<String, dynamic> additionalSettings,
   ) async =>
       '${await getAPIHost(additionalSettings)}/repos${standardUrl.substring('https://${hosts[0]}'.length)}';
+
+  Future<GitHubActionsApi> actionsApi(
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async => GitHubActionsApi(
+    await convertStandardUrlToAPIUrl(standardUrl, additionalSettings),
+    (url) async {
+      final res = await _sourceRequestWithAuthFallback(url, additionalSettings);
+      if (res.statusCode != 200) githubErrorCheck(res);
+      return res;
+    },
+  );
+
+  static bool hasActionsConfiguration(Map<String, dynamic> settings) => [
+    'githubActionsBranch',
+    'githubActionsWorkflow',
+    'githubActionsArtifactPattern',
+  ].every((key) => (settings[key] as String? ?? '').trim().isNotEmpty);
+
+  Future<APKDetails> _fetchActionsDetails(
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async {
+    if (!hasActionsConfiguration(additionalSettings)) {
+      throw ObtainiumError(tr('githubActionsMissingConfiguration'));
+    }
+    final api = await actionsApi(standardUrl, additionalSettings);
+    final build = await api.latestBuild(
+      workflow: additionalSettings['githubActionsWorkflow'],
+      branch: additionalSettings['githubActionsBranch'],
+      artifactPattern: additionalSettings['githubActionsArtifactPattern'],
+      includePullRequests:
+          additionalSettings['githubActionsIncludePullRequests'] == true,
+    );
+    if (build == null) {
+      throw ObtainiumError(tr('githubActionsNoArtifacts'));
+    }
+    if (build.artifacts.length != 1) {
+      throw ObtainiumError(tr('githubActionsAmbiguousArtifact'));
+    }
+    final artifact = build.artifacts.single;
+    final uri = Uri.parse(standardUrl);
+    final artifactId = (artifact['id'] as num).toInt();
+    final token = await getTokenIfAny(additionalSettings);
+    final url = token?.isNotEmpty == true
+        ? '${api.repoApiUrl}/actions/artifacts/$artifactId/zip'
+        : 'https://nightly.link${uri.path}/actions/artifacts/$artifactId.zip';
+    final selected = MapEntry('${artifact['name']}.zip', url);
+    return APKDetails(
+      build.version,
+      [selected],
+      getAppNames(standardUrl),
+      releaseDate: build.date,
+      releaseUrl: build.run['html_url'] as String?,
+      allAssetUrls: [selected],
+    );
+  }
 
   /// Checks if the repository has been renamed or transferred.
   ///
@@ -953,6 +1055,9 @@ class GitHub extends AppSource {
     Map<String, dynamic> additionalSettings,
   ) async {
     try {
+      if (!hostChanged && additionalSettings['githubActionsEnabled'] == true) {
+        return await _fetchActionsDetails(standardUrl, additionalSettings);
+      }
       return await fetchReleaseDetailsWithTagFallback(
         standardUrl,
         additionalSettings,
