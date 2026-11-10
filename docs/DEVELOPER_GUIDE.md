@@ -376,18 +376,29 @@ further detail requests.
 
 GitHub apps can opt into Actions builds instead of releases. The add/edit form
 opens `GitHubActionsPickerButton` to discover branches, workflows, and the
-artifact names from the latest successful qualifying run. The saved artifact
-regex selects an artifact by name on subsequent checks; the existing ZIP APK
-filter selects files *inside* its archive. Direct pull-request and merge-queue
-runs are excluded unless explicitly enabled. The Actions pseudo-version is
+artifact names from up to three recent successful qualifying runs. Users enter
+ordered, literal invariant name fragments (escaped and separated by `.*`)
+or opt into an advanced regex. The preview marks matching and nonmatching
+artifacts, and downloads ZIP contents only on demand; it also previews APKs
+inside an optional one-level nested ZIP. The existing ZIP APK filter is saved
+separately to select extracted APKs by path. Trigger types are selected in a
+checklist: push, schedule, and dispatch enabled by default; pull-request,
+merge-queue, and chained `workflow_run` builds require opt-in. Chained runs
+can originate from a PR without a dependable upstream event field. The Actions pseudo-version is
 `run_number.run_attempt`, so reruns are distinguishable.
 
 `GitHubActionsApi` uses public REST metadata endpoints, with a bounded search
-back through successful runs if a matching artifact was not uploaded. A GitHub
-token uses the authenticated artifact ZIP endpoint; without one, public repos
-use an artifact-ID-specific nightly.link ZIP URL. The downloader preserves the
-`.zip` filename, and its cross-origin redirect handling strips authentication
-headers before following GitHub's storage redirect. Release mode is unchanged.
+of ten qualifying runs for routine checks, sorted by run start time with rerun
+attempts considered. Artifact listings are cached within the picker session.
+A GitHub token uses the authenticated artifact ZIP endpoint; if metadata
+rejects that token, subsequent metadata and artifact selection use anonymous
+requests and nightly.link. An authenticated artifact download that receives a
+non-rate-limit 401/403 is retried once using nightly.link. Without a token,
+public repos use the artifact-ID-specific nightly.link ZIP URL. The downloader
+preserves the `.zip` filename, extracts the outer artifact archive and one
+additional ZIP level, and its cross-origin redirect handling strips
+authentication headers before following GitHub's storage redirect. API
+rate-limit messages suggest configuring a token. Release mode is unchanged.
 
 ### Source-specific notes: Tencent release dates
 

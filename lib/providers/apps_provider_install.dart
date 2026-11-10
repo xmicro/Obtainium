@@ -25,6 +25,7 @@ import 'package:obtainium/core/logging/app_logger.dart';
 import 'package:obtainium/providers/notifications_provider.dart';
 import 'package:obtainium/providers/settings_provider.dart';
 import 'package:obtainium/providers/source_provider.dart';
+import 'package:obtainium/services/github_actions_archive_service.dart';
 import 'package:obtainium/utils/signing_cert_utils.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
@@ -288,17 +289,42 @@ extension AppsProviderInstall on AppsProvider {
         forAPKDownload: true,
       );
       additionalSettingsPlusSourceConfig['url'] = downloadUrl;
-      var downloadedFile = await downloadFileWithRetry(
-        fileNameNoExt,
-        fileNameHasExtension,
-        headers: headers,
-        reportProgress,
-        this.apkDir.path,
-        additionalSettingsPlusSourceConfig,
-        useExisting: useExisting,
-        cancellationToken: cancellationToken,
-        holdRetry: () => _holdRetryUntilForeground(cancellationToken),
-      );
+      Future<File> fetchFile(Map<String, String>? requestHeaders) =>
+          downloadFileWithRetry(
+            fileNameNoExt,
+            fileNameHasExtension,
+            headers: requestHeaders,
+            reportProgress,
+            this.apkDir.path,
+            additionalSettingsPlusSourceConfig,
+            useExisting: useExisting,
+            cancellationToken: cancellationToken,
+            holdRetry: () => _holdRetryUntilForeground(cancellationToken),
+          );
+      late File downloadedFile;
+      try {
+        downloadedFile = await fetchFile(headers);
+      } on HTTPStatusError catch (err) {
+        final actionsArtifact = source is GitHub &&
+            app.additionalSettings['githubActionsEnabled'] == true &&
+            RegExp(r'/actions/artifacts/\d+/zip$')
+                .hasMatch(Uri.parse(downloadUrl).path);
+        if (!actionsArtifact ||
+            (err.statusCode != 401 && err.statusCode != 403) ||
+            err.responseHeaders['x-ratelimit-remaining'] == '0' ||
+            err.responseHeaders.containsKey('retry-after')) {
+          rethrow;
+        }
+        final artifactId = int.parse(
+          RegExp(r'/actions/artifacts/(\d+)/zip$')
+              .firstMatch(Uri.parse(downloadUrl).path)!.group(1)!,
+        );
+        final fallback = GitHub.nightlyActionsArtifactUrl(
+          app.url, artifactId,
+        );
+        additionalSettingsPlusSourceConfig['url'] = fallback;
+        downloadedFile = await fetchFile(null);
+      }
       completedDownloads = 1;
       if (apps[app.id] != null) {
         apps[app.id]!.downloadProgress = _remainingStepsProgress.toDouble();
@@ -351,6 +377,15 @@ extension AppsProviderInstall on AppsProvider {
             destinationPath: apkDirPath,
             sourceFile: downloadedFile,
           );
+          if (source is GitHub &&
+              app.additionalSettings['githubActionsEnabled'] == true) {
+            await _extractArchive(
+              app,
+              () => extractOneNestedActionZipLevel(Directory(apkDirPath)),
+              destinationPath: apkDirPath,
+              sourceFile: downloadedFile,
+            );
+          }
         }
         if (multipleApks) {
           // Download the remaining split URLs into the same directory.

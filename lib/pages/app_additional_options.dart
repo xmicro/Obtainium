@@ -80,6 +80,7 @@ Future<Map<String, dynamic>?> showAdditionalOptionsPage(
           source: source,
           url: app?.app.url,
           items: items,
+          initialSettings: app?.app.additionalSettings ?? const {},
           scrollToSection: scrollToSection,
           onValuesChanged: (v) => values = v,
         ),
@@ -199,6 +200,7 @@ class _AdditionalOptionsPage extends StatefulWidget {
   const _AdditionalOptionsPage({
     required this.title,
     required this.items,
+    required this.initialSettings,
     required this.onValuesChanged,
     required this.source,
     required this.url,
@@ -209,6 +211,7 @@ class _AdditionalOptionsPage extends StatefulWidget {
   final AppSource? source;
   final String? url;
   final List<List<GeneratedFormItem>> items;
+  final Map<String, dynamic> initialSettings;
   final ValueChanged<Map<String, dynamic>> onValuesChanged;
   final String? scrollToSection;
 
@@ -222,7 +225,10 @@ class _AdditionalOptionsPageState extends State<_AdditionalOptionsPage> {
   @override
   void initState() {
     super.initState();
-    _currentValues = getDefaultValuesFromFormItems(widget.items);
+    _currentValues = {
+      ...getDefaultValuesFromFormItems(widget.items),
+      ...widget.initialSettings,
+    };
     final target = widget.scrollToSection;
     if (target != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTo(target));
@@ -299,7 +305,14 @@ class _AdditionalOptionsPageState extends State<_AdditionalOptionsPage> {
                       onValueChanges: (v, valid, isBuilding) {
                         final wasEnabled =
                             _currentValues['githubActionsEnabled'] == true;
-                        _currentValues = Map<String, dynamic>.from(v);
+                        final merged = Map<String, dynamic>.from(v);
+                        _currentValues.forEach((key, value) {
+                          if (key.startsWith('githubActions') &&
+                              key != 'githubActionsEnabled') {
+                            merged.putIfAbsent(key, () => value);
+                          }
+                        });
+                        _currentValues = merged;
                         widget.onValuesChanged(_currentValues);
                         if (wasEnabled !=
                             (_currentValues['githubActionsEnabled'] == true)) {

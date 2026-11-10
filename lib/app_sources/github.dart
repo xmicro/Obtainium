@@ -106,35 +106,6 @@ class GitHub extends AppSource {
           value: false,
         ),
       ],
-      [
-        GeneratedFormTextField(
-          'githubActionsBranch',
-          label: tr('githubActionsBranch'),
-          required: false,
-        ),
-      ],
-      [
-        GeneratedFormTextField(
-          'githubActionsWorkflow',
-          label: tr('githubActionsWorkflow'),
-          required: false,
-        ),
-      ],
-      [
-        GeneratedFormTextField(
-          'githubActionsArtifactPattern',
-          label: tr('githubActionsArtifactPattern'),
-          required: false,
-          additionalValidators: [(value) => regExValidator(value)],
-        ),
-      ],
-      [
-        GeneratedFormSwitch(
-          'githubActionsIncludePullRequests',
-          label: tr('githubActionsIncludePullRequests'),
-          value: false,
-        ),
-      ],
     ],
     [GeneratedFormHeader(label: tr('sectionReleaseOptions'))],
     [
@@ -447,14 +418,56 @@ class GitHub extends AppSource {
   Future<GitHubActionsApi> actionsApi(
     String standardUrl,
     Map<String, dynamic> additionalSettings,
-  ) async => GitHubActionsApi(
-    await convertStandardUrlToAPIUrl(standardUrl, additionalSettings),
-    (url) async {
-      final res = await _sourceRequestWithAuthFallback(url, additionalSettings);
-      if (res.statusCode != 200) githubErrorCheck(res);
-      return res;
-    },
-  );
+  ) async {
+    late final GitHubActionsApi api;
+    bool anonymous = false;
+    api = GitHubActionsApi(
+      await convertStandardUrlToAPIUrl(standardUrl, additionalSettings),
+      (url) async {
+        var res = await sourceRequest(
+          url,
+          anonymous
+              ? (Map<String, dynamic>.from(additionalSettings)
+                  ..['skipAuth'] = true)
+              : additionalSettings,
+        );
+        if (!anonymous && _isAuthRejection(res)) {
+          anonymous = true;
+          api.usedAnonymousFallback = true;
+          res = await sourceRequest(
+            url,
+            Map<String, dynamic>.from(additionalSettings)
+              ..['skipAuth'] = true,
+          );
+        }
+        if (res.statusCode != 200) {
+          try {
+            githubErrorCheck(res);
+          } on RateLimitError catch (err) {
+            throw GitHubActionsRateLimitError(err.remainingMinutes);
+          }
+        }
+        return res;
+      },
+    );
+    return api;
+  }
+
+  static String nightlyActionsArtifactUrl(String standardUrl, int id) =>
+      'https://nightly.link${Uri.parse(standardUrl).path}/actions/artifacts/$id.zip';
+
+  Future<String> actionsArtifactUrl(
+    String standardUrl,
+    Map<String, dynamic> settings,
+    GitHubActionsApi api,
+    int id,
+  ) async {
+    final token = await getTokenIfAny(settings);
+    if (token?.isNotEmpty == true && !api.usedAnonymousFallback) {
+      return '${api.repoApiUrl}/actions/artifacts/$id/zip';
+    }
+    return nightlyActionsArtifactUrl(standardUrl, id);
+  }
 
   static bool hasActionsConfiguration(Map<String, dynamic> settings) => [
     'githubActionsBranch',
@@ -474,8 +487,7 @@ class GitHub extends AppSource {
       workflow: additionalSettings['githubActionsWorkflow'],
       branch: additionalSettings['githubActionsBranch'],
       artifactPattern: additionalSettings['githubActionsArtifactPattern'],
-      includePullRequests:
-          additionalSettings['githubActionsIncludePullRequests'] == true,
+      allowedEvents: githubActionsSelectedEvents(additionalSettings),
     );
     if (build == null) {
       throw ObtainiumError(tr('githubActionsNoArtifacts'));
@@ -484,12 +496,10 @@ class GitHub extends AppSource {
       throw ObtainiumError(tr('githubActionsAmbiguousArtifact'));
     }
     final artifact = build.artifacts.single;
-    final uri = Uri.parse(standardUrl);
     final artifactId = (artifact['id'] as num).toInt();
-    final token = await getTokenIfAny(additionalSettings);
-    final url = token?.isNotEmpty == true
-        ? '${api.repoApiUrl}/actions/artifacts/$artifactId/zip'
-        : 'https://nightly.link${uri.path}/actions/artifacts/$artifactId.zip';
+    final url = await actionsArtifactUrl(
+      standardUrl, additionalSettings, api, artifactId,
+    );
     final selected = MapEntry('${artifact['name']}.zip', url);
     return APKDetails(
       build.version,

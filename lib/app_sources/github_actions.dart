@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:http/http.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/services/http_service.dart';
@@ -7,17 +8,46 @@ import 'package:obtainium/services/http_service.dart';
 bool githubActionsArtifactMatches(String pattern, String name) =>
     RegExp(pattern).hasMatch(name);
 
-String githubActionsExactArtifactPattern(String name) =>
-    '^${RegExp.escape(name)}\$';
+String githubActionsLiteralPattern(Iterable<String> parts) =>
+    parts.map((part) => part.trim()).where((part) => part.isNotEmpty)
+        .map(RegExp.escape).join('.*');
+
+const githubActionsDefaultEvents = <String>{
+  'push', 'schedule', 'workflow_dispatch', 'repository_dispatch',
+};
+
+const githubActionsOptionalEvents = <String>{
+  'pull_request', 'pull_request_target', 'merge_group', 'workflow_run',
+};
+
+Set<String> githubActionsSelectedEvents(Map<String, dynamic> settings) {
+  final saved = settings['githubActionsEvents']?.toString();
+  if (saved != null) return saved.split(',').where((e) => e.isNotEmpty).toSet();
+  return {
+    ...githubActionsDefaultEvents,
+    if (settings['githubActionsIncludePullRequests'] == true)
+      'pull_request',
+  };
+}
 
 bool githubActionsRunIsEligible(
   Map<String, dynamic> run, {
   required bool includePullRequests,
+  Set<String>? allowedEvents,
 }) {
   if (run['conclusion'] != 'success') return false;
   final event = run['event']?.toString() ?? '';
+  if (allowedEvents != null) return allowedEvents.contains(event);
   return includePullRequests ||
-      (!event.startsWith('pull_request') && event != 'merge_group');
+      (!event.startsWith('pull_request') && event != 'merge_group' &&
+          event != 'workflow_run');
+}
+
+class GitHubActionsRateLimitError extends RateLimitError {
+  GitHubActionsRateLimitError(super.remainingMinutes);
+
+  @override
+  String toString() => '${super.toString()} ${tr('githubActionsRateLimitHint')}';
 }
 
 class GitHubActionsBuild {
@@ -37,6 +67,8 @@ class GitHubActionsApi {
 
   final String repoApiUrl;
   final Future<Response> Function(String) request;
+  bool usedAnonymousFallback = false;
+  final Map<int, List<Map<String, dynamic>>> _artifactCache = {};
 
   Future<dynamic> _get(String url) async {
     final res = await request(url);
@@ -74,11 +106,9 @@ class GitHubActionsApi {
   Future<List<Map<String, dynamic>>> workflows() =>
       _paged('/actions/workflows', listKey: 'workflows');
 
-  Future<GitHubActionsBuild?> latestBuild({
+  Future<List<Map<String, dynamic>>> workflowRuns({
     required String workflow,
     required String branch,
-    String? artifactPattern,
-    bool includePullRequests = false,
   }) async {
     final runs = await _paged(
       '/actions/workflows/${Uri.encodeComponent(workflow)}/runs',
@@ -86,25 +116,74 @@ class GitHubActionsApi {
       listKey: 'workflow_runs',
       maxPages: 1,
     );
+    runs.sort((a, b) {
+      final first = DateTime.tryParse(
+          (a['run_started_at'] ?? a['created_at'] ?? '').toString());
+      final second = DateTime.tryParse(
+          (b['run_started_at'] ?? b['created_at'] ?? '').toString());
+      final byDate = (second ?? DateTime(1970)).compareTo(first ?? DateTime(1970));
+      if (byDate != 0) return byDate;
+      final byNumber = ((b['run_number'] as num?) ?? 0)
+          .compareTo((a['run_number'] as num?) ?? 0);
+      if (byNumber != 0) return byNumber;
+      return ((b['run_attempt'] as num?) ?? 1)
+          .compareTo((a['run_attempt'] as num?) ?? 1);
+    });
+    return runs;
+  }
+
+  Future<List<Map<String, dynamic>>> runArtifacts(int id) async {
+    if (_artifactCache.containsKey(id)) return _artifactCache[id]!;
+    final artifacts = await _paged(
+      '/actions/runs/$id/artifacts',
+      listKey: 'artifacts',
+      maxPages: 1,
+    );
+    final valid = artifacts
+        .where((a) => a['expired'] != true && a['id'] is num).toList();
+    _artifactCache[id] = valid;
+    return valid;
+  }
+
+  Future<List<GitHubActionsBuild>> recentBuildsFromRuns(
+    List<Map<String, dynamic>> runs, {
+    required Set<String> allowedEvents,
+    int count = 3,
+  }) async {
+    final result = <GitHubActionsBuild>[];
+    for (final run in runs.where((r) => githubActionsRunIsEligible(
+      r, includePullRequests: false, allowedEvents: allowedEvents,
+    )).take(3)) {
+      if (run['id'] is! num) continue;
+      final artifacts = await runArtifacts((run['id'] as num).toInt());
+      if (artifacts.isNotEmpty) result.add(GitHubActionsBuild(run, artifacts));
+      if (result.length >= count) break;
+    }
+    return result;
+  }
+
+  Future<GitHubActionsBuild?> latestBuild({
+    required String workflow,
+    required String branch,
+    String? artifactPattern,
+    bool includePullRequests = false,
+    Set<String>? allowedEvents,
+  }) async {
+    final runs = await workflowRuns(workflow: workflow, branch: branch);
     for (final run
         in runs
             .where(
               (r) => githubActionsRunIsEligible(
                 r,
                 includePullRequests: includePullRequests,
+                allowedEvents: allowedEvents,
               ),
             )
             .take(10)) {
       final runId = run['id'];
       if (runId is! num) continue;
-      final artifacts = await _paged(
-        '/actions/runs/${runId.toInt()}/artifacts',
-        listKey: 'artifacts',
-      );
+      final artifacts = await runArtifacts(runId.toInt());
       final matches = artifacts.where((artifact) {
-        if (artifact['expired'] == true || artifact['id'] is! num) {
-          return false;
-        }
         final name = artifact['name']?.toString() ?? '';
         return artifactPattern == null ||
             githubActionsArtifactMatches(artifactPattern, name);

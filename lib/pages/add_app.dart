@@ -731,14 +731,21 @@ class AddAppPageState extends State<AddAppPage> {
             : []),
       ],
       onValueChanges: (values, valid, isBuilding) {
+        final merged = Map<String, dynamic>.from(values);
+        additionalSettings.forEach((key, value) {
+          if (key.startsWith('githubActions') &&
+              key != 'githubActionsEnabled') {
+            merged.putIfAbsent(key, () => value);
+          }
+        });
         if (!isBuilding) {
           setState(() {
-            additionalSettings = values;
-            additionalSettingsValid = valid && _requiredFormFieldsFilled(s, values);
+            additionalSettings = merged;
+            additionalSettingsValid = valid && _requiredFormFieldsFilled(s, merged);
           });
         } else {
-          additionalSettings = values;
-          additionalSettingsValid = valid && _requiredFormFieldsFilled(s, values);
+          additionalSettings = merged;
+          additionalSettingsValid = valid && _requiredFormFieldsFilled(s, merged);
         }
       },
     );
