@@ -178,7 +178,7 @@ class AddAppPageState extends State<AddAppPage> {
         }
       }
     }
-    if (s is GitHub &&
+    if (source is GitHub &&
         additionalSettings['githubActionsEnabled'] == true &&
         !GitHub.hasActionsConfiguration(additionalSettings)) {
       return false;
