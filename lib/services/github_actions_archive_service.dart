@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:archive/archive.dart';
+import 'package:archive/archive.dart' hide ZipFile;
 import 'package:flutter_archive/flutter_archive.dart';
 import 'package:obtainium/app_sources/github_actions.dart';
 
