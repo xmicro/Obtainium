@@ -12,6 +12,8 @@ import 'package:flutter_archive/flutter_archive.dart';
 import 'package:flutter_fgbg/flutter_fgbg.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:obtainium/components/app_detail_widgets.dart';
+import 'package:obtainium/app_sources/github.dart';
+import 'package:obtainium/services/github_actions_archive_service.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/installers/external_installer.dart';
 import 'package:obtainium/installers/installer.dart';
@@ -231,7 +233,10 @@ extension AppsProviderInstall on AppsProvider {
       unawaited(notificationsProvider?.cancel(notifId));
       int? prevProg;
       var fileNameNoExt = '${app.id}-${downloadUrl.hashCode}';
-      if (source.urlsAlwaysHaveExtension) {
+      final fileNameHasExtension = source.urlsAlwaysHaveExtension ||
+          (source is GitHub &&
+              app.additionalSettings['githubActionsEnabled'] == true);
+      if (fileNameHasExtension) {
         fileNameNoExt =
             '$fileNameNoExt.${app.apkUrls[app.preferredApkIndex].key.split('.').last}';
       }
@@ -283,17 +288,33 @@ extension AppsProviderInstall on AppsProvider {
         forAPKDownload: true,
       );
       additionalSettingsPlusSourceConfig['url'] = downloadUrl;
-      var downloadedFile = await downloadFileWithRetry(
-        fileNameNoExt,
-        source.urlsAlwaysHaveExtension,
-        headers: headers,
-        reportProgress,
-        this.apkDir.path,
-        additionalSettingsPlusSourceConfig,
-        useExisting: useExisting,
-        cancellationToken: cancellationToken,
-        holdRetry: () => _holdRetryUntilForeground(cancellationToken),
-      );
+      Future<File> fetchFile(Map<String, String>? requestHeaders) =>
+          downloadFileWithRetry(
+            fileNameNoExt, fileNameHasExtension,
+            headers: requestHeaders, reportProgress,
+            this.apkDir.path, additionalSettingsPlusSourceConfig,
+            useExisting: useExisting,
+            cancellationToken: cancellationToken,
+            holdRetry: () => _holdRetryUntilForeground(cancellationToken),
+          );
+      late File downloadedFile;
+      try {
+        downloadedFile = await fetchFile(headers);
+      } on HTTPStatusError catch (err) {
+        final actionsArtifact = source is GitHub &&
+            app.additionalSettings['githubActionsEnabled'] == true &&
+            RegExp(r'/actions/artifacts/\d+/zip$')
+                .hasMatch(Uri.parse(downloadUrl).path);
+        if (!actionsArtifact ||
+            (err.statusCode != 401 && err.statusCode != 403) ||
+            err.responseHeaders['x-ratelimit-remaining'] == '0' ||
+            err.responseHeaders.containsKey('retry-after')) rethrow;
+        final id = int.parse(RegExp(r'/actions/artifacts/(\d+)/zip$')
+            .firstMatch(Uri.parse(downloadUrl).path)!.group(1)!);
+        additionalSettingsPlusSourceConfig['url'] =
+            GitHub.nightlyActionsArtifactUrl(app.url, id);
+        downloadedFile = await fetchFile(null);
+      }
       completedDownloads = 1;
       if (apps[app.id] != null) {
         apps[app.id]!.downloadProgress = _remainingStepsProgress.toDouble();
@@ -346,6 +367,18 @@ extension AppsProviderInstall on AppsProvider {
             destinationPath: apkDirPath,
             sourceFile: downloadedFile,
           );
+          if (source is GitHub &&
+              app.additionalSettings['githubActionsEnabled'] == true) {
+            await _extractArchive(
+              app,
+              () => prepareActionsArchive(Directory(apkDirPath),
+                  filenamePattern:
+                      app.additionalSettings['githubActionsFilePattern']
+                          ?.toString() ?? ''),
+              destinationPath: apkDirPath,
+              sourceFile: downloadedFile,
+            );
+          }
         }
         if (multipleApks) {
           // Download the remaining split URLs into the same directory.
@@ -412,7 +445,11 @@ extension AppsProviderInstall on AppsProvider {
           final reg = RegExp(filterRegEx);
           apks.removeWhere((apk) {
             final relativePath = apk.path.substring(apkDir!.path.length + 1);
-            final shouldDelete = !reg.hasMatch(relativePath);
+            final fileNameToMatch = source is GitHub &&
+                    app.additionalSettings['githubActionsEnabled'] == true
+                ? apk.path.split(Platform.pathSeparator).last
+                : relativePath;
+            final shouldDelete = !reg.hasMatch(fileNameToMatch);
             if (shouldDelete) {
               apk.delete();
             }

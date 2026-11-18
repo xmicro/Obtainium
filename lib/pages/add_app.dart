@@ -6,6 +6,8 @@ import 'package:obtainium/components/ui_widgets.dart';
 import 'package:obtainium/components/generated_form_renderer.dart';
 import 'package:obtainium/components/category_editor.dart';
 import 'package:obtainium/app_sources/samsunggalaxystore.dart';
+import 'package:obtainium/app_sources/github.dart';
+import 'package:obtainium/components/github_actions_picker.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/pages/app.dart';
 import 'package:obtainium/pages/import_export.dart';
@@ -50,6 +52,7 @@ class AddAppPageState extends State<AddAppPage> {
   bool inferAppIdIfOptional = true;
   List<String> pickedCategories = [];
   int urlInputKey = 0;
+  int _githubActionsFormGeneration = 0;
   late final SourceProvider sourceProvider;
 
   Future<String?>? _sourceNoteFuture;
@@ -174,6 +177,11 @@ class AddAppPageState extends State<AddAppPage> {
           }
         }
       }
+    }
+    if (source is GitHub &&
+        additionalSettings['githubActionsEnabled'] == true &&
+        !GitHub.hasActionsConfiguration(additionalSettings)) {
+      return false;
     }
     return true;
   }
@@ -714,7 +722,7 @@ class AddAppPageState extends State<AddAppPage> {
     return GeneratedForm(
       tileMode: true,
       key: Key(
-        '${s.name}-${s.hostChanged.toString()}-${s.hostIdenticalDespiteAnyChange.toString()}',
+        '${s.name}-${s.hostChanged.toString()}-${s.hostIdenticalDespiteAnyChange.toString()}-$_githubActionsFormGeneration',
       ),
       items: [
         ...formItems,
@@ -723,14 +731,27 @@ class AddAppPageState extends State<AddAppPage> {
             : []),
       ],
       onValueChanges: (values, valid, isBuilding) {
+        final merged = Map<String, dynamic>.from(values);
+        additionalSettings.forEach((key, value) {
+          if (key.startsWith('githubActions') &&
+              key != 'githubActionsEnabled') {
+            merged.putIfAbsent(key, () => value);
+          }
+        });
+        if (merged['githubActionsEnabled'] == true) {
+          merged['versionDetection'] = false;
+          merged['releaseDateAsVersion'] = false;
+        }
         if (!isBuilding) {
           setState(() {
-            additionalSettings = values;
-            additionalSettingsValid = valid;
+            additionalSettings = merged;
+            additionalSettingsValid = valid &&
+                _requiredFormFieldsFilled(s, merged);
           });
         } else {
-          additionalSettings = values;
-          additionalSettingsValid = valid;
+          additionalSettings = merged;
+          additionalSettingsValid = valid &&
+              _requiredFormFieldsFilled(s, merged);
         }
       },
     );
@@ -750,6 +771,24 @@ class AddAppPageState extends State<AddAppPage> {
           fontWeight: FontWeight.w600,
         ),
       ),
+      if (pickedSource is GitHub &&
+          !pickedSource!.hostChanged &&
+          additionalSettings['githubActionsEnabled'] == true) ...[
+        const SizedBox(height: AppSpacings.sm),
+        GitHubActionsPickerButton(
+          source: pickedSource! as GitHub,
+          url: userInput,
+          settings: additionalSettings,
+          onSelected: (selection) {
+            setState(() {
+              additionalSettings.addAll(selection);
+              additionalSettingsValid = _requiredFormFieldsFilled(
+                  pickedSource!, additionalSettings);
+              _githubActionsFormGeneration++;
+            });
+          },
+        ),
+      ],
       _buildSourceSpecificForm(settingsProvider),
       const SizedBox(height: AppSpacings.md),
       CardTile(
