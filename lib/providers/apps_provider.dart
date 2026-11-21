@@ -545,6 +545,7 @@ Future<File> downloadFile(
                 'errorWithHttpStatusCode',
                 args: [response.statusCode.toString()],
               ),
+        responseHeaders: response.headers,
       )..url = url;
     }
 
